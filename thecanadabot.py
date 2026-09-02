@@ -1,6 +1,6 @@
 # ==========================================================
-#  TheCanada Bot - Moderasyon, Eğlence, Seviye & Otomasyon Botu (c! prefix)
-#  discord.py ile yazılmıştır, Render Web Service için hazırdır.
+# TheCanada Bot - Moderasyon, Eğlence, Seviye & Otomasyon Botu (c! prefix)
+# discord.py ile yazılmıştır, Render Web Service için hazırdır.
 # ==========================================================
 
 import os
@@ -9,6 +9,7 @@ import threading
 import time
 import random
 import json
+from collections import defaultdict
 
 import discord
 from discord.ext import commands, tasks
@@ -23,14 +24,26 @@ PREFIX = os.getenv("PREFIX", "c!")
 VOICE_CHANNEL_ID = os.getenv("VOICE_CHANNEL_ID")
 WELCOME_CHANNEL_ID = os.getenv("WELCOME_CHANNEL_ID")
 
+# Güvenlik Ayarları (Çevre Değişkenleri / .env)
+LOG_KANAL_ID = int(os.getenv("LOG_KANAL_ID", 0)) if os.getenv("LOG_KANAL_ID") else None
+
+# Çoklu Yönetici Rol/Kullanıcı ID Desteği
+YONETICI_ROL_IDS = [r.strip() for r in os.getenv("YONETICI_ROL_ID", "").split(",") if r.strip()]
+
 # Hafıza Verileri
-warnings_data = {} # {guild_id: {user_id: count}}
-afk_users = {}     # {guild_id: {user_id: {"reason": str, "old_nick": str}}}
-active_games = {}  # {channel_id: {"type": "sayitahmin", "number": int, "attempts": int}}
+warnings_data = {}      # {guild_id: {user_id: count}} (Normal uyarılar)
+spam_warnings = {}      # {guild_id: {user_id: count}} (Spam özel uyarıları)
+afk_users = {}          # {guild_id: {user_id: {"reason": str, "old_nick": str}}}
+active_games = {}       # {channel_id: {"type": "sayitahmin", "number": int, "attempts": int}}
 
 # Seviye / XP Verileri
-levels_data = {}   # {guild_id: {user_id: {"xp": int, "level": int}}}
-xp_cooldowns = {}  # {guild_id: {user_id: timestamp}}
+levels_data = {}        # {guild_id: {user_id: {"xp": int, "level": int}}}
+xp_cooldowns = {}       # {guild_id: {user_id: timestamp}}
+
+# Spam Takip Hafızası (User_ID: [timestamp_listesi])
+user_messages = defaultdict(list)
+SPAM_LIMIT = 10         # 8 saniyede 10 mesaj sınırı
+SPAM_ZAMAN = 8          # 8 saniye penceresi
 
 # Otomatik Duyuru Ayarları
 auto_message_config = {
@@ -45,9 +58,9 @@ auto_message_config = {
 # ----------------------------------------------------------
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
+intents.members = True        # Üye ve bot girişlerini algılamak için
 intents.voice_states = True
-intents.presences = True  # Spotify etkinliği tespiti için ŞART
+intents.presences = True      # Spotify etkinliği tespiti için ŞART
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 
@@ -94,9 +107,69 @@ async def on_message(message):
     if message.author.bot or message.guild is None:
         return
 
+    guild_id_int = message.guild.id
     guild_id = str(message.guild.id)
-    user_id = str(message.author.id)
+    user_id_str = str(message.author.id)
+    user_id = message.author.id
     channel_id = message.channel.id
+
+    # Admin Kontrolü (Spam ve Link engelinden etkilenmezler)
+    is_admin = message.author.guild_permissions.administrator
+
+    if not is_admin:
+        # ----------------------------------------------------
+        # GÜVENLİK 1: DISCORD DAVET LİNKİ ENGELİ
+        # ----------------------------------------------------
+        forbidden_links = ["discord.gg/", "discord.com/invite/"]
+        if any(link in message.content.lower() for link in forbidden_links):
+            try:
+                await message.delete()
+                await message.channel.send(
+                    f"⚠️ {message.author.mention}, bu sunucuda Discord davet linki paylaşmak yasaktır!",
+                    delete_after=5
+                )
+                return
+            except discord.Forbidden:
+                pass
+
+        # ----------------------------------------------------
+        # GÜVENLİK 2: SPAM KORUMASI (8 Saniyede 10 Mesaj -> 3 Uyarı / Timeout)
+        # ----------------------------------------------------
+        now_time = time.time()
+        user_messages[user_id] = [t for t in user_messages[user_id] if now_time - t < SPAM_ZAMAN]
+        user_messages[user_id].append(now_time)
+
+        if len(user_messages[user_id]) > SPAM_LIMIT:
+            try:
+                await message.delete()
+            except discord.Forbidden:
+                pass
+
+            # Sadece limiti ilk aştığı tetikleme anında işlem yap (Flood esnasında sürekli mesaj atıp mesajı kirletmemesi için)
+            if len(user_messages[user_id]) == SPAM_LIMIT + 1:
+                if guild_id_int not in spam_warnings:
+                    spam_warnings[guild_id_int] = {}
+
+                spam_warnings[guild_id_int][user_id] = spam_warnings[guild_id_int].get(user_id, 0) + 1
+                u_count = spam_warnings[guild_id_int][user_id]
+
+                if u_count < 3:
+                    await message.channel.send(
+                        f"⚠️ {message.author.mention}, lütfen spam/flood yapma! **({u_count}/3)** uyarı aldın!",
+                        delete_after=6
+                    )
+                else:
+                    # 3/3 Uyarıya ulaştı -> 10 Dakika Timeout
+                    spam_warnings[guild_id_int][user_id] = 0  # Sayacı sıfırla
+                    timeout_duration = discord.utils.utcnow() + discord.utils.timedelta(minutes=10)
+                    try:
+                        await message.author.timeout(timeout_duration, reason="8 saniyede 10+ mesaj / 3 kez spam uyarısı alındı.")
+                        await message.channel.send(
+                            f"🚫 {message.author.mention}, **3/3** spam uyarısına ulaştığın için **10 dakika** boyunca susturuldun!"
+                        )
+                    except discord.Forbidden:
+                        await message.channel.send(f"⚠️ {message.author.mention} 3/3 spam sınırını aştı ancak yetkim yetmediği için susturamadım!")
+            return
 
     # 1. AFK KONTROLÜ
     if message.guild.id in afk_users and message.author.id in afk_users[message.guild.id]:
@@ -137,21 +210,20 @@ async def on_message(message):
     if guild_id not in xp_cooldowns:
         xp_cooldowns[guild_id] = {}
 
-    last_xp = xp_cooldowns[guild_id].get(user_id, 0)
+    last_xp = xp_cooldowns[guild_id].get(user_id_str, 0)
     if now - last_xp >= 60:
-        xp_cooldowns[guild_id][user_id] = now
+        xp_cooldowns[guild_id][user_id_str] = now
 
         if guild_id not in levels_data:
             levels_data[guild_id] = {}
 
-        if user_id not in levels_data[guild_id]:
-            levels_data[guild_id][user_id] = {"xp": 0, "level": 1}
+        if user_id_str not in levels_data[guild_id]:
+            levels_data[guild_id][user_id_str] = {"xp": 0, "level": 1}
 
-        user_data = levels_data[guild_id][user_id]
+        user_data = levels_data[guild_id][user_id_str]
         kazanilan_xp = random.randint(15, 25)
         user_data["xp"] += kazanilan_xp
 
-        # Seviye Atlama Formülü: Seviye * 100 XP
         gereken_xp = user_data["level"] * 100
         if user_data["xp"] >= gereken_xp:
             user_data["level"] += 1
@@ -187,7 +259,7 @@ async def auto_message_loop():
 
 
 # ----------------------------------------------------------
-# HOŞ GELDİN & AYRILMA ETKİNLİKLERİ
+# HOŞ GELDİN, AYRILMA VE BOT KATILIM ETKİNLİKLERİ
 # ----------------------------------------------------------
 def get_welcome_channel(guild):
     if WELCOME_CHANNEL_ID:
@@ -198,12 +270,43 @@ def get_welcome_channel(guild):
 
 @bot.event
 async def on_member_join(member):
+    # ----------------------------------------------------
+    # GÜVENLİK 3: SUNUCUYA BOT EKLENDİĞİNDE ADMINLERI UYARMA
+    # ----------------------------------------------------
+    if member.bot:
+        if LOG_KANAL_ID:
+            log_channel = member.guild.get_channel(LOG_KANAL_ID)
+            if log_channel:
+                embed = discord.Embed(
+                    title="🚨 GÜVENLİK UYARISI: Yeni Bot Katıldı!",
+                    description=(
+                        f"Sunucuya yeni bir bot eklendi: **{member.mention}** (`{member.name}`)\n\n"
+                        f"⚠️ **Dikkat:** Doğrulanmamış veya izinsiz botlar sunucuya zararlı olabilir. "
+                        f"Lütfen yetkilerini ve kaynağını derhal kontrol edin!"
+                    ),
+                    color=discord.Color.red()
+                )
+                embed.set_thumbnail(url=member.display_avatar.url)
+                embed.add_field(name="Bot ID", value=str(member.id), inline=True)
+                embed.set_footer(text="Güvenlik Modülü")
+
+                if YONETICI_ROL_IDS:
+                    mention_text = " ".join([f"<@&{r_id}>" for r_id in YONETICI_ROL_IDS])
+                else:
+                    mention_text = "@everyone"
+
+                await log_channel.send(content=mention_text, embed=embed)
+        return
+
+    # Normal Kullanıcı Katılımı
     channel = get_welcome_channel(member.guild)
     if channel:
         await channel.send(f"👋 Hoş geldin {member.mention}! Sunucumuza katıldığın için mutluyuz.")
 
 @bot.event
 async def on_member_remove(member):
+    if member.bot:
+        return
     channel = get_welcome_channel(member.guild)
     if channel:
         await channel.send(f"📤 **{member}** sunucumuzdan ayrıldı.")
@@ -299,7 +402,8 @@ async def yardim(ctx):
         f"• `{PREFIX}ban @üye [sebep]` | `{PREFIX}unban <ID>` — Ban işlemleri\n"
         f"• `{PREFIX}kick @üye [sebep]` — Üyeyi sunucudan atar\n"
         f"• `{PREFIX}timeout @üye <dk> [sebep]` | `{PREFIX}unmute @üye` — Susturma\n"
-        f"• `{PREFIX}warn @üye [sebep]` | `{PREFIX}warnings @üye` — Uyarı sistemi\n"
+        f"• `{PREFIX}warn @üye [sebep]` | `{PREFIX}unwarn @üye [sayı]` — Uyarı verme / silme\n"
+        f"• `{PREFIX}warnings @üye` — Üyenin uyarılarını gösterir\n"
         f"• `{PREFIX}lock` | `{PREFIX}unlock` — Kanal kilitler/açar\n"
         f"• `{PREFIX}slowmode <saniye>` — Yavaş mod uygular\n"
         f"• `{PREFIX}nick @üye <isim>` | `{PREFIX}rolver` | `{PREFIX}rolal` — Üye yönetimi"
@@ -330,7 +434,6 @@ async def seviye(ctx, uye: str = None):
     embed.add_field(name="⭐ Seviye", value=f"**{lvl}**", inline=True)
     embed.add_field(name="✨ XP", value=f"**{xp} / {gereken_xp}**", inline=True)
     
-    # İlerleme Çubuğu (Progress Bar)
     oran = min(xp / gereken_xp, 1.0)
     dolu = int(oran * 10)
     bos = 10 - dolu
@@ -347,7 +450,6 @@ async def top(ctx):
         await ctx.reply("📊 Henüz sunucuda kimse XP kazanmadı!")
         return
 
-    # Seviyeye ve XP'ye göre sırala
     sorted_users = sorted(
         levels_data[guild_id].items(),
         key=lambda x: (x[1]["level"], x[1]["xp"]),
@@ -498,7 +600,10 @@ async def saril(ctx):
 
     gifler = [
         "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExdW5pczE0a3B5Z29pZ3IxeHFueWtyc3dwbXB2aXdpZHdveWZzNTUycCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/3M4NpbLCTxBqU/giphy.gif",
-        "https://media.giphy.com/media/l2QDM9Jnim1YV55YA/giphy.gif"
+        "https://media.giphy.com/media/l2QDM9Jnim1YV55YA/giphy.gif",
+        "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExdW9pYzhvZWlmbzA5dThmdzQ0cWh6cnhvdWVmbnhhOHphbXRvYW0wdyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/od5H3PmEG5EVq/giphy.gif",
+        "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExdzYxb2lhNW1ucnlqdWhkZXdqZms4MGQ2c2tyNWllZ3l0dmR4MGp6biZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/PHZ7v9tfQu0o0/giphy.gif",
+        "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExcGNidGppandjcWNmcDliNWJxbmlndWhnYnJscG4xNWprNW0zdHV4YiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/aD1fI3UUz428U/giphy.gif"
     ]
     embed = discord.Embed(description=f"🤗 {ctx.author.mention}, {hedef.mention} kişisine sımsıkı sarıldı!", color=discord.Color.purple())
     embed.set_image(url=random.choice(gifler))
@@ -514,7 +619,10 @@ async def tokat(ctx):
 
     gifler = [
         "https://media.giphy.com/media/Gf3AUz3eBNbTW/giphy.gif",
-        "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExbTZ5NW1ocmR5MXQxcXZmdXZpMXp6M2IxdnVrcTVwMXRrc2JndHFtZiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/j3iGKfXRKlLqw/giphy.gif"
+        "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExbTZ5NW1ocmR5MXQxcXZmdXZpMXp6M2IxdnVrcTVwMXRrc2JndHFtZiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/j3iGKfXRKlLqw/giphy.gif",
+        "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExaWVmZmF2d3JucjRhMzduZ25vN2lsNHc0ZGFia3pzcHFpMWx0NnB4MCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/Zau0yRL15t84y/giphy.gif",
+        "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExenN4a3M5cTNoamc4ejljNXYwaHMzMXc0enhrOXlnaGthcG14aWQ2ZCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/Q13pne1n2Y42A/giphy.gif",
+        "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExdjYxZDFyZHExNWk0a3N0aHdkdDZpdnA1NzY0Y3R1cWhseWZjcTBvMCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/AlsI33InB414k/giphy.gif"
     ]
     embed = discord.Embed(description=f"💥 {ctx.author.mention}, {hedef.mention} kişisine osmanlı tokadı yapıştırdı!", color=discord.Color.red())
     embed.set_image(url=random.choice(gifler))
@@ -656,6 +764,28 @@ async def warn(ctx, uye: str = None, *, sebep: str = "Sebep belirtilmedi"):
             print(f"Otomatik mute hatası: {e}")
 
 
+@bot.command(name="unwarn", aliases=["uyarı-sil", "uyarisil"])
+async def unwarn(ctx, uye: str = None, miktar: str = "1"):
+    member = await get_mentioned_member(ctx)
+    if member is None:
+        await ctx.reply("⚠️ Lütfen uyarısını silmek istediğiniz üyeyi etiketleyin!")
+        return
+
+    guild_id = ctx.guild.id
+    user_id = member.id
+
+    if guild_id not in warnings_data or user_id not in warnings_data[guild_id] or warnings_data[guild_id][user_id] == 0:
+        await ctx.reply(f"ℹ️ **{member.display_name}** kullanıcısının zaten hiç uyarısı yok.")
+        return
+
+    silinecek = int(miktar) if miktar.isdigit() else 1
+    mevcut = warnings_data[guild_id][user_id]
+    yeni_sayi = max(0, mevcut - silinecek)
+    warnings_data[guild_id][user_id] = yeni_sayi
+
+    await ctx.send(f"✅ **{member.mention}** kullanıcısının **{silinecek}** uyarısı silindi!\n📊 Kalan uyarı sayısı: **{yeni_sayi}**")
+
+
 @bot.command(name="warnings", aliases=["uyarılar", "uyarilar"])
 async def warnings(ctx, uye: str = None):
     member = await get_mentioned_member(ctx) or ctx.author
@@ -748,7 +878,7 @@ async def serverinfo(ctx):
 
 
 # ----------------------------------------------------------
-# 6) RENDER İÇİN KEEP-ALIVE
+# RENDER İÇİN KEEP-ALIVE
 # ----------------------------------------------------------
 app = Flask(__name__)
 
@@ -776,7 +906,7 @@ def keep_alive():
     threading.Thread(target=self_ping, daemon=True).start()
 
 # ----------------------------------------------------------
-# 7) BOTU BAŞLAT
+# BOTU BAŞLAT
 # ----------------------------------------------------------
 if __name__ == "__main__":
     keep_alive()
