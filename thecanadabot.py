@@ -1,5 +1,5 @@
 # ==========================================================
-#  TheCanada Bot - Moderasyon & Eğlence Botu (c! prefix)
+#  TheCanada Bot - Moderasyon, Eğlence & Otomasyon Botu (c! prefix)
 #  discord.py ile yazılmıştır, Render Web Service için hazırdır.
 # ==========================================================
 
@@ -27,6 +27,14 @@ warnings_data = {} # {guild_id: {user_id: count}}
 afk_users = {}     # {guild_id: {user_id: {"reason": str, "old_nick": str}}}
 active_games = {}  # {channel_id: {"type": "sayitahmin", "number": int, "attempts": int}}
 
+# Otomatik Duyuru Ayarları
+auto_message_config = {
+    "channel_id": None,
+    "interval_minutes": 60,
+    "message": None,
+    "running": False
+}
+
 # ----------------------------------------------------------
 # 1) BOT AYARLARI
 # ----------------------------------------------------------
@@ -34,24 +42,25 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.voice_states = True
+intents.presences = True  # Spotify etkinliği tespiti için ŞART
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 
 
 # ----------------------------------------------------------
-# YETKİ KONTROLÜ (Eğlence ve Genel Komutlar Herkese Açık)
+# YETKİ KONTROLÜ
 # ----------------------------------------------------------
 @bot.check
 async def yetki_kontrolu(ctx):
     if ctx.guild is None:
         return False
     
-    # Herkesin kullanabileceği komut listesi
+    # Herkesin kullanabileceği komutlar
     herkese_acik = [
         "afk", "yardım", "yardim", "help", "ping", "avatar", "pp", 
         "userinfo", "kullanıcıbilgi", "kullanicibilgi", "serverinfo", "sunucubilgi",
         "8ball", "zar", "yazitura", "yazıtura", "duello", "düello", "sayitahmin", "sayıtahmin",
-        "saril", "sarıl", "tokat"
+        "saril", "sarıl", "tokat", "spotify"
     ]
     
     if ctx.command and ctx.command.name in herkese_acik:
@@ -65,7 +74,7 @@ async def yetki_kontrolu(ctx):
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CheckFailure):
-        await ctx.reply("❌ Bu moderasyon komutunu sadece **yöneticiler (Administrator)** kullanabilir!")
+        await ctx.reply("❌ Bu yönetici komutunu sadece **yöneticiler (Administrator)** kullanabilir!")
         return
     if isinstance(error, commands.CommandNotFound):
         return
@@ -73,7 +82,7 @@ async def on_command_error(ctx, error):
 
 
 # ----------------------------------------------------------
-# AFK VE SAYI TAHMİN OYUNU DİNLEYİCİSİ (ON_MESSAGE)
+# DİNLEYİCİLER (ON_MESSAGE & LÖÖP TASKS)
 # ----------------------------------------------------------
 @bot.event
 async def on_message(message):
@@ -102,7 +111,7 @@ async def on_message(message):
                 reason = afk_users[guild_id][mentioned_user.id]["reason"]
                 await message.reply(f"💤 **{mentioned_user.display_name}** şu anda AFK!\n📝 **Sebep:** {reason}")
 
-    # 2. SAYI TAHMİN OYUNU KONTROLÜ
+    # 2. SAYI TAHMİN OYUNU
     if channel_id in active_games and active_games[channel_id]["type"] == "sayitahmin":
         if message.content.isdigit():
             tahmin = int(message.content)
@@ -119,6 +128,30 @@ async def on_message(message):
                 await message.reply(f"🎉 **TEBRİKLER!** Doğru sayıyı bildin: **{hedef}**\n📊 Toplam **{deneme}** tahminde bulundu.")
 
     await bot.process_commands(message)
+
+
+# ----------------------------------------------------------
+# OTOMATİK MESAJ DÖNGÜSÜ (TASK)
+# ----------------------------------------------------------
+@tasks.loop(minutes=1)
+async def auto_message_loop():
+    if not auto_message_config["running"] or not auto_message_config["channel_id"]:
+        return
+
+    # Dakika sayacını kontrol et
+    if not hasattr(auto_message_loop, "counter"):
+        auto_message_loop.counter = 0
+
+    auto_message_loop.counter += 1
+
+    if auto_message_loop.counter >= auto_message_config["interval_minutes"]:
+        channel = bot.get_channel(auto_message_config["channel_id"])
+        if channel and auto_message_config["message"]:
+            try:
+                await channel.send(auto_message_config["message"])
+            except Exception as e:
+                print(f"Otomatik mesaj gönderilemedi: {e}")
+        auto_message_loop.counter = 0
 
 
 # ----------------------------------------------------------
@@ -184,6 +217,8 @@ async def on_ready():
     await join_afk_channel()
     if not voice_watchdog.is_running():
         voice_watchdog.start()
+    if not auto_message_loop.is_running():
+        auto_message_loop.start()
 
 
 # ----------------------------------------------------------
@@ -201,24 +236,38 @@ async def get_mentioned_role(ctx):
 
 
 # ----------------------------------------------------------
-# KOMUTLAR
+# YARDIM VE BİLGİ KOMUTLARI
 # ----------------------------------------------------------
 
 @bot.command(name="yardım", aliases=["yardim", "help"])
 async def yardim(ctx):
     mesaj = (
         f"🎮 **Eğlence & Oyun Komutları**\n"
-        f"• `{PREFIX}sayitahmin` — 1-100 arası sayı tahmin oyununu başlatır\n"
-        f"• `{PREFIX}duello @üye` — Belirtilen üye ile 1v1 kapışma başlatır\n"
+        f"• `{PREFIX}sayitahmin` — Sayı tahmin oyununu başlatır\n"
+        f"• `{PREFIX}duello @üye` — Belirtilen üye ile 1v1 kapışır\n"
         f"• `{PREFIX}8ball <soru>` — Mistik küre sorunu yanıtlar\n"
         f"• `{PREFIX}zar` — 1-6 arası zar atar\n"
         f"• `{PREFIX}yazitura` — Yazı mı tura mı atar\n"
-        f"• `{PREFIX}saril @üye` / `{PREFIX}tokat @üye` — Eğlenceli etkileşimler\n"
+        f"• `{PREFIX}saril @üye` / `{PREFIX}tokat @üye` — Etkileşimler\n"
         f"• `{PREFIX}afk [sebep]` — AFK moduna geçer\n\n"
-        f"🛠️ **Moderasyon (Sadece Admin)**\n"
-        f"• `{PREFIX}sil <sayı>` | `{PREFIX}ban` | `{PREFIX}kick` | `{PREFIX}timeout` | `{PREFIX}unmute`\n"
-        f"• `{PREFIX}warn` | `{PREFIX}warnings` | `{PREFIX}lock` | `{PREFIX}unlock` | `{PREFIX}slowmode`\n"
-        f"• `{PREFIX}nick` | `{PREFIX}rolver` | `{PREFIX}rolal`"
+        f"🎵 **Sosyal & Bilgi Komutları**\n"
+        f"• `{PREFIX}spotify [@üye]` — Üyenin dinlediği Spotify şarkısını gösterir\n"
+        f"• `{PREFIX}avatar [@üye]` — Profil fotoğrafını gösterir\n"
+        f"• `{PREFIX}userinfo [@üye]` — Üye detaylı bilgilerini gösterir\n"
+        f"• `{PREFIX}serverinfo` — Sunucu istatistiklerini gösterir\n"
+        f"• `{PREFIX}ping` — Botun gecikme süresini gösterir\n\n"
+        f"📢 **Otomatik Mesaj (Sadece Admin)**\n"
+        f"• `{PREFIX}otomesaj-ayarla <kanal_id> <dakika> <mesaj>` — Otomatik duyuru başlatır\n"
+        f"• `{PREFIX}otomesaj-kapat` — Otomatik duyuruyu durdurur\n\n"
+        f"🛠️ **Moderasyon Komutları (Sadece Admin)**\n"
+        f"• `{PREFIX}sil <sayı>` — Belirtilen miktarda mesaj siler\n"
+        f"• `{PREFIX}ban @üye [sebep]` | `{PREFIX}unban <ID>` — Ban işlemleri\n"
+        f"• `{PREFIX}kick @üye [sebep]` — Üyeyi sunucudan atar\n"
+        f"• `{PREFIX}timeout @üye <dk> [sebep]` | `{PREFIX}unmute @üye` — Susturma\n"
+        f"• `{PREFIX}warn @üye [sebep]` | `{PREFIX}warnings @üye` — Uyarı sistemi\n"
+        f"• `{PREFIX}lock` | `{PREFIX}unlock` — Kanal kilitler/açar\n"
+        f"• `{PREFIX}slowmode <saniye>` — Yavaş mod uygular\n"
+        f"• `{PREFIX}nick @üye <isim>` | `{PREFIX}rolver` | `{PREFIX}rolal` — Üye yönetimi"
     )
     await ctx.reply(mesaj)
 
@@ -226,6 +275,58 @@ async def yardim(ctx):
 @bot.command(name="ping")
 async def ping(ctx):
     await ctx.reply(f"🏓 Pong! Gecikme: **{round(bot.latency * 1000)}ms**")
+
+
+# --- SPOTIFY KOMUTU ---
+
+@bot.command(name="spotify")
+async def spotify_info(ctx, uye: str = None):
+    member = await get_mentioned_member(ctx) or ctx.author
+
+    spotify_activity = None
+    for act in member.activities:
+        if isinstance(act, discord.Spotify):
+            spotify_activity = act
+            break
+
+    if spotify_activity is None:
+        await ctx.reply(f"🎧 **{member.display_name}** şu anda Spotify'da bir şey dinlemiyor (veya Discord etkinlik durumu kapalı).")
+        return
+
+    embed = discord.Embed(
+        title=f"🎧 {member.display_name} Spotify Dinliyor",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="🎵 Şarkı", value=f"**{spotify_activity.title}**", inline=False)
+    embed.add_field(name="👤 Sanatçı", value=", ".join(spotify_activity.artists), inline=True)
+    embed.add_field(name="💿 Albüm", value=spotify_activity.album, inline=True)
+    embed.set_thumbnail(url=spotify_activity.album_cover_url)
+    embed.set_footer(text=f"Şarkı Bağlantısı: {spotify_activity.track_url}")
+
+    await ctx.send(embed=embed)
+
+
+# --- OTOMATİK MESAJ KOMUTLARI ---
+
+@bot.command(name="otomesaj-ayarla", aliases=["otoduyuru-ayarla"])
+async def otomesaj_ayarla(ctx, kanal_id: str = None, dakika: str = None, *, mesaj: str = None):
+    if kanal_id is None or dakika is None or mesaj is None or not kanal_id.isdigit() or not dakika.isdigit():
+        await ctx.reply(f"⚠️ Kullanım: `{PREFIX}otomesaj-ayarla <kanal_id> <dakika> <mesaj>`\nÖrnek: `{PREFIX}otomesaj-ayarla 123456789 60 Sunucumuza hoş geldiniz!`")
+        return
+
+    auto_message_config["channel_id"] = int(kanal_id)
+    auto_message_config["interval_minutes"] = int(dakika)
+    auto_message_config["message"] = mesaj
+    auto_message_config["running"] = True
+    auto_message_loop.counter = 0
+
+    await ctx.send(f"📢 **Otomatik Mesaj Ayarlandı!**\n📍 **Kanal:** <#{kanal_id}>\n⏱️ **Süre:** {dakika} dakikada bir\n📝 **Mesaj:** {mesaj}")
+
+
+@bot.command(name="otomesaj-kapat", aliases=["otoduyuru-kapat"])
+async def otomesaj_kapat(ctx):
+    auto_message_config["running"] = False
+    await ctx.send("🛑 Otomatik mesaj gönderimi durduruldu.")
 
 
 # --- OYUN & EĞLENCE KOMUTLARI ---
@@ -244,7 +345,7 @@ async def sayitahmin(ctx):
         "attempts": 0
     }
 
-    await ctx.send("🎲 **Sayı Tahmin Oyunu Başladı!**\n1 ile 100 arasında bir sayı tuttum. Tahminlerinizi doğrudan kanala yazın! (Daha büyük için ⬆️, daha küçük için ⬇️ tepkisi vereceğim)")
+    await ctx.send("🎲 **Sayı Tahmin Oyunu Başladı!**\n1 ile 100 arasında bir sayı tuttum. Tahminlerinizi kanala yazın! (⬆️ Daha büyük / ⬇️ Daha küçük)")
 
 
 @bot.command(name="duello", aliases=["düello"])
@@ -274,17 +375,12 @@ async def duello(ctx):
 @bot.command(name="8ball")
 async def eight_ball(ctx, *, soru: str = None):
     if soru is None:
-        await ctx.reply(f"⚠️ Lütfen bota bir soru sor! Örnek: `{PREFIX}8ball Bugün şanslı mıyım?`")
+        await ctx.reply(f"⚠️ Lütfen bir soru sor! Örnek: `{PREFIX}8ball Bugün şanslı mıyım?`")
         return
 
     cevaplar = [
-        "Kesinlikle evet! ✨",
-        "Şüphesiz öyle. 👍",
-        "Büyük ihtimalle... 🤔",
-        "Pek sanmıyorum. 🛑",
-        "İmkansız, unut bunu! ❌",
-        "Zaman gösterir, şu an cevap veremem. 🔮",
-        "Kaderin bu soruya kapalı. 🌫️",
+        "Kesinlikle evet! ✨", "Şüphesiz öyle. 👍", "Büyük ihtimalle... 🤔",
+        "Pek sanmıyorum. 🛑", "İmkansız, unut bunu! ❌", "Zaman gösterir... 🔮",
         "Yüzde yüz! 🔥"
     ]
     await ctx.reply(f"🔮 **Soru:** {soru}\n🎱 **Cevap:** {random.choice(cevaplar)}")
@@ -313,10 +409,7 @@ async def saril(ctx):
         "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExdW5pczE0a3B5Z29pZ3IxeHFueWtyc3dwbXB2aXdpZHdveWZzNTUycCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/3M4NpbLCTxBqU/giphy.gif",
         "https://media.giphy.com/media/l2QDM9Jnim1YV55YA/giphy.gif"
     ]
-    embed = discord.Embed(
-        description=f"🤗 {ctx.author.mention}, {hedef.mention} kişisine sımsıkı sarıldı!",
-        color=discord.Color.purple()
-    )
+    embed = discord.Embed(description=f"🤗 {ctx.author.mention}, {hedef.mention} kişisine sımsıkı sarıldı!", color=discord.Color.purple())
     embed.set_image(url=random.choice(gifler))
     await ctx.send(embed=embed)
 
@@ -332,10 +425,7 @@ async def tokat(ctx):
         "https://media.giphy.com/media/Gf3AUz3eBNbTW/giphy.gif",
         "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExbTZ5NW1ocmR5MXQxcXZmdXZpMXp6M2IxdnVrcTVwMXRrc2JndHFtZiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/j3iGKfXRKlLqw/giphy.gif"
     ]
-    embed = discord.Embed(
-        description=f"💥 {ctx.author.mention}, {hedef.mention} kişisine osmanlı tokadı yapıştırdı!",
-        color=discord.Color.red()
-    )
+    embed = discord.Embed(description=f"💥 {ctx.author.mention}, {hedef.mention} kişisine osmanlı tokadı yapıştırdı!", color=discord.Color.red())
     embed.set_image(url=random.choice(gifler))
     await ctx.send(embed=embed)
 
@@ -363,82 +453,63 @@ async def afk(ctx, *, sebep: str = "Sebep belirtilmedi"):
     await ctx.send(f"💤 {ctx.author.mention} artık **AFK**.\n📝 **Sebep:** {sebep}")
 
 
-# --- MODERASYON & TEMİZLİK ---
+# --- MODERASYON KOMUTLARI ---
 
 @bot.command(name="sil", aliases=["mesajsil", "clear", "purge"])
 async def sil(ctx, miktar: str = None):
     if miktar is None or not miktar.isdigit():
-        await ctx.reply(f"⚠️ Lütfen mesaj miktarını yazın! Örnek: `{PREFIX}sil 50`")
+        await ctx.reply(f"⚠️ Miktarı belirtin! Örnek: `{PREFIX}sil 50`")
         return
 
     miktar = int(miktar)
     if miktar < 1 or miktar > 1000:
-        await ctx.reply("⚠️ Lütfen 1 ile 1000 arasında bir sayı girin!")
-        return
-
-    if not ctx.channel.permissions_for(ctx.guild.me).manage_messages:
-        await ctx.reply("❌ Bu kanalda mesajları yönetme yetkim yok!")
+        await ctx.reply("⚠️ 1 ile 1000 arasında sayı girin!")
         return
 
     try:
         silinenler = await ctx.channel.purge(limit=miktar + 1)
         toplam_silinen = len(silinenler) - 1
-        bilgi = await ctx.send(f"✅ **{max(toplam_silinen, 0)}** mesaj başarıyla silindi.")
+        bilgi = await ctx.send(f"✅ **{max(toplam_silinen, 0)}** mesaj silindi.")
         await asyncio.sleep(5)
         await bilgi.delete()
     except Exception as e:
         print(e)
-        await ctx.send("❌ Mesajlar silinirken bir hata oluştu.")
 
 
 @bot.command(name="ban")
 async def ban(ctx, *, arg: str = None):
     member = await get_mentioned_member(ctx)
     if member is None:
-        await ctx.reply(f"⚠️ Lütfen banlamak istediğiniz üyeyi etiketleyin!")
-        return
-
-    if member.top_role >= ctx.guild.me.top_role or member == ctx.guild.owner:
-        await ctx.reply("❌ Bu üyeyi banlayamıyorum.")
+        await ctx.reply("⚠️ Lütfen üyeyi etiketleyin!")
         return
 
     reason = "Sebep belirtilmedi"
-    if arg:
-        parcalar = arg.split(maxsplit=1)
-        if len(parcalar) > 1:
-            reason = parcalar[1]
+    if arg and len(arg.split(maxsplit=1)) > 1:
+        reason = arg.split(maxsplit=1)[1]
 
     try:
         await member.ban(reason=reason)
-        await ctx.send(f"✅ **{member}** sunucudan banlandı.\n📝 Sebep: {reason}")
+        await ctx.send(f"✅ **{member}** banlandı.\n📝 Sebep: {reason}")
     except Exception as e:
         print(e)
-        await ctx.send("❌ Üye banlanırken bir hata oluştu.")
 
 
 @bot.command(name="kick")
 async def kick(ctx, *, arg: str = None):
     member = await get_mentioned_member(ctx)
     if member is None:
-        await ctx.reply(f"⚠️ Lütfen atmak istediğiniz üyeyi etiketleyin!")
-        return
-
-    if member.top_role >= ctx.guild.me.top_role or member == ctx.guild.owner:
-        await ctx.reply("❌ Bu üyeyi atamıyorum.")
+        await ctx.reply("⚠️ Lütfen üyeyi etiketleyin!")
         return
 
     reason = "Sebep belirtilmedi"
-    if arg:
-        parcalar = arg.split(maxsplit=1)
-        if len(parcalar) > 1:
-            reason = parcalar[1]
+    if arg and len(arg.split(maxsplit=1)) > 1:
+        reason = arg.split(maxsplit=1)[1]
 
     try:
         await member.kick(reason=reason)
-        await ctx.send(f"✅ **{member}** sunucudan atıldı.\n📝 Sebep: {reason}")
+        await ctx.send(f"✅ **{member}** atıldı.\n📝 Sebep: {reason}")
     except Exception as e:
         print(e)
-        await ctx.send("❌ Üye atılırken bir hata oluştu.")
 
 
 @bot.command(name="timeout", aliases=["sustur"])
@@ -456,29 +527,21 @@ async def timeout(ctx, uye: str = None, dakika: str = None, *, sebep: str = None
         await ctx.send(f"✅ **{member}** {dakika} dakika susturuldu.\n📝 Sebep: {reason}")
     except Exception as e:
         print(e)
-        await ctx.send("❌ Üye susturulurken bir hata oluştu.")
 
 
 @bot.command(name="unmute", aliases=["untimeout"])
 async def unmute(ctx, uye: str = None):
     member = await get_mentioned_member(ctx)
-    if member is None:
-        await ctx.reply(f"⚠️ Lütfen susturması kaldırılacak üyeyi etiketleyin!")
-        return
-
-    try:
+    if member:
         await member.timeout(None)
         await ctx.send(f"🔊 **{member}** üzerindeki susturma kaldırıldı.")
-    except Exception as e:
-        print(e)
-        await ctx.send("❌ Susturma kaldırılırken bir hata oluştu.")
 
 
 @bot.command(name="warn", aliases=["uyar"])
 async def warn(ctx, uye: str = None, *, sebep: str = "Sebep belirtilmedi"):
     member = await get_mentioned_member(ctx)
     if member is None:
-        await ctx.reply(f"⚠️ Lütfen uyarmak istediğiniz üyeyi etiketleyin!")
+        await ctx.reply("⚠️ Lütfen üyeyi etiketleyin!")
         return
 
     guild_id = ctx.guild.id
@@ -490,13 +553,13 @@ async def warn(ctx, uye: str = None, *, sebep: str = "Sebep belirtilmedi"):
     warnings_data[guild_id][user_id] = warnings_data[guild_id].get(user_id, 0) + 1
     toplam_uyari = warnings_data[guild_id][user_id]
 
-    await ctx.send(f"⚠️ **{member.mention}** uyarıldı! (Toplam Uyarı: **{toplam_uyari}**)\n📝 Sebep: {sebep}")
+    await ctx.send(f"⚠️ **{member.mention}** uyarıldı! (Toplam: **{toplam_uyari}**)\n📝 Sebep: {sebep}")
 
     if toplam_uyari >= 3:
         sure = discord.utils.utcnow() + discord.utils.timedelta(minutes=10)
         try:
             await member.timeout(sure, reason="3 Uyarı sınırına ulaşıldı.")
-            await ctx.send(f"🚫 **{member.mention}** 3 uyarı aldığı için otomatik olarak **10 dakika** susturuldu!")
+            await ctx.send(f"🚫 **{member.mention}** 3 uyarı aldığı için **10 dakika** susturuldu!")
             warnings_data[guild_id][user_id] = 0
         except Exception as e:
             print(f"Otomatik mute hatası: {e}")
@@ -505,64 +568,42 @@ async def warn(ctx, uye: str = None, *, sebep: str = "Sebep belirtilmedi"):
 @bot.command(name="warnings", aliases=["uyarılar", "uyarilar"])
 async def warnings(ctx, uye: str = None):
     member = await get_mentioned_member(ctx) or ctx.author
-    guild_id = ctx.guild.id
-    user_id = member.id
-
-    sayi = warnings_data.get(guild_id, {}).get(user_id, 0)
-    await ctx.reply(f"📊 **{member.display_name}** adlı kullanıcının mevcut uyarı sayısı: **{sayi}**")
+    sayi = warnings_data.get(ctx.guild.id, {}).get(member.id, 0)
+    await ctx.reply(f"📊 **{member.display_name}** uyarı sayısı: **{sayi}**")
 
 
 @bot.command(name="lock", aliases=["kilitle"])
 async def lock(ctx):
     overwrite = ctx.channel.overwrites_for(ctx.guild.default_role)
     overwrite.send_messages = False
-    try:
-        await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
-        await ctx.send("🔒 Kanal kilitlendi.")
-    except Exception as e:
-        print(e)
+    await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
+    await ctx.send("🔒 Kanal kilitlendi.")
 
 
 @bot.command(name="unlock", aliases=["kilitac"])
 async def unlock(ctx):
     overwrite = ctx.channel.overwrites_for(ctx.guild.default_role)
     overwrite.send_messages = None
-    try:
-        await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
-        await ctx.send("🔓 Kanalın kilidi açıldı.")
-    except Exception as e:
-        print(e)
+    await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
+    await ctx.send("🔓 Kanalın kilidi açıldı.")
 
 
 @bot.command(name="slowmode", aliases=["yavasmod"])
 async def slowmode(ctx, saniye: str = None):
-    if saniye is None or not saniye.isdigit():
-        await ctx.reply(f"⚠️ Kullanım: `{PREFIX}slowmode 5` (Kapatmak için `0`)")
-        return
-
-    sec = int(saniye)
-    try:
-        await ctx.channel.edit(slowmode_delay=sec)
-        await ctx.send(f"⏱️ Yavaş mod **{sec} saniye** olarak ayarlandı.")
-    except Exception as e:
-        print(e)
+    if saniye and saniye.isdigit():
+        await ctx.channel.edit(slowmode_delay=int(saniye))
+        await ctx.send(f"⏱️ Yavaş mod **{saniye} saniye** olarak ayarlandı.")
 
 
 @bot.command(name="nick", aliases=["isim"])
 async def nick(ctx, uye: str = None, *, yeni_isim: str = None):
     member = await get_mentioned_member(ctx)
-    if member is None or yeni_isim is None:
-        await ctx.reply(f"⚠️ Kullanım: `{PREFIX}nick @üye yeni isim`")
-        return
-
-    try:
+    if member and yeni_isim:
         await member.edit(nick=yeni_isim)
-        await ctx.send(f"✅ **{member.name}** ismi **{yeni_isim}** olarak değiştirildi.")
-    except Exception as e:
-        print(e)
+        await ctx.send(f"✅ **{member.name}** ismi **{yeni_isim}** yapıldı.")
 
 
-@bot.command(name="rolver", aliases=["addrole"])
+@bot.command(name="rolver")
 async def rolver(ctx, uye: str = None, rol: str = None):
     member = await get_mentioned_member(ctx)
     role = await get_mentioned_role(ctx)
@@ -571,7 +612,7 @@ async def rolver(ctx, uye: str = None, rol: str = None):
         await ctx.send(f"✅ **{member.display_name}** kullanıcısına **{role.name}** rolü verildi.")
 
 
-@bot.command(name="rolal", aliases=["removerole"])
+@bot.command(name="rolal")
 async def rolal(ctx, uye: str = None, rol: str = None):
     member = await get_mentioned_member(ctx)
     role = await get_mentioned_role(ctx)
@@ -616,40 +657,32 @@ async def serverinfo(ctx):
 
 
 # ----------------------------------------------------------
-# 6) RENDER İÇİN KEEP-ALIVE (WEB SERVICE + SELF-PING)
+# 6) RENDER İÇİN KEEP-ALIVE
 # ----------------------------------------------------------
 app = Flask(__name__)
-
 
 @app.route("/")
 def anasayfa():
     return "TheCanada Bot çalışıyor ✅"
 
-
 def flask_calistir():
     port = int(os.getenv("PORT", 3000))
     app.run(host="0.0.0.0", port=port)
 
-
 def self_ping():
     url = os.getenv("RENDER_EXTERNAL_URL")
     if not url:
-        print("ℹ️ RENDER_EXTERNAL_URL bulunamadı, self-ping devre dışı.")
         return
-
     while True:
         time.sleep(4 * 60)
         try:
             requests.get(url, timeout=10)
-            print("🔄 Self-ping gönderildi.")
-        except Exception as e:
-            print(f"⚠️ Self-ping hatası: {e}")
-
+        except Exception:
+            pass
 
 def keep_alive():
     threading.Thread(target=flask_calistir, daemon=True).start()
     threading.Thread(target=self_ping, daemon=True).start()
-
 
 # ----------------------------------------------------------
 # 7) BOTU BAŞLAT
