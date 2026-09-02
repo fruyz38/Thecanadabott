@@ -21,8 +21,9 @@ PREFIX = os.getenv("PREFIX", "c!")
 VOICE_CHANNEL_ID = os.getenv("VOICE_CHANNEL_ID")
 WELCOME_CHANNEL_ID = os.getenv("WELCOME_CHANNEL_ID") # Hoş geldin/Ayrılma kanalı ID'si (Opsiyonel)
 
-# Uyarı verilerini hafızada tutmak için sözlük {guild_id: {user_id: count}}
-warnings_data = {}
+# Hafıza Verileri
+warnings_data = {} # {guild_id: {user_id: count}}
+afk_users = {}     # {guild_id: {user_id: {"reason": str, "old_nick": str}}}
 
 # ----------------------------------------------------------
 # 1) BOT AYARLARI
@@ -36,12 +37,18 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 
 
 # ----------------------------------------------------------
-# SADECE ADMİNLER KULLANABİLİR (Tüm komutlar için)
+# SADECE ADMİNLER KULLANABİLİR (Komutlar İçin Yetki Kontrolü)
+# AFK ve Genel Komutlar İçin Admin İstisnası
 # ----------------------------------------------------------
 @bot.check
-async def sadece_adminler(ctx):
+async def yetki_kontrolu(ctx):
     if ctx.guild is None:
-        return False  # DM'lerde çalışmasın
+        return False
+    # afk, yardım, ping, avatar, userinfo, serverinfo herkes kullanabilsin
+    herkese_acik = ["afk", "yardım", "yardim", "help", "ping", "avatar", "pp", "userinfo", "kullanıcıbilgi", "kullanicibilgi", "serverinfo", "sunucubilgi"]
+    if ctx.command and ctx.command.name in herkese_acik:
+        return True
+    
     if ctx.author.guild_permissions.administrator:
         return True
     raise commands.CheckFailure("no_admin")
@@ -50,11 +57,46 @@ async def sadece_adminler(ctx):
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CheckFailure):
-        await ctx.reply("❌ Bu botu sadece **yöneticiler (Administrator)** kullanabilir!")
+        await ctx.reply("❌ Bu moderasyon komutunu sadece **yöneticiler (Administrator)** kullanabilir!")
         return
     if isinstance(error, commands.CommandNotFound):
-        return  # Bilinmeyen komutlarda sessiz kal
+        return
     print(f"Beklenmeyen hata: {error}")
+
+
+# ----------------------------------------------------------
+# AFK / ETKİNLİK DİNLEYİCİSİ (ON_MESSAGE)
+# ----------------------------------------------------------
+@bot.event
+async def on_message(message):
+    if message.author.bot or message.guild is None:
+        return
+
+    guild_id = message.guild.id
+    user_id = message.author.id
+
+    # 1. AFK OLAN BİRİ MESAJ YAZARSA AFK'DAN ÇIKAR
+    if guild_id in afk_users and user_id in afk_users[guild_id]:
+        data = afk_users[guild_id].pop(user_id)
+        old_nick = data.get("old_nick")
+        
+        # İsmi eski haline döndürmeye çalış
+        try:
+            await message.author.edit(nick=old_nick)
+        except Exception:
+            pass # Yetki yetersizse ismi değiştiremez, hata vermesin
+
+        await message.channel.send(f"👋 **{message.author.display_name}**, tekrar hoş geldin! AFK modundan çıkarıldın.", delete_after=5)
+
+    # 2. BİRİ AFK OLAN BİRİNİ ETİKETLERSE BİLDİRİM VER
+    if message.mentions:
+        for mentioned_user in message.mentions:
+            if guild_id in afk_users and mentioned_user.id in afk_users[guild_id]:
+                reason = afk_users[guild_id][mentioned_user.id]["reason"]
+                await message.reply(f"💤 **{mentioned_user.display_name}** şu anda AFK!\n📝 **Sebep:** {reason}")
+
+    # Komutların çalışmaya devam edebilmesi için şart
+    await bot.process_commands(message)
 
 
 # ----------------------------------------------------------
@@ -143,10 +185,34 @@ async def get_mentioned_role(ctx):
 # 5) KOMUTLAR
 # ----------------------------------------------------------
 
+@bot.command(name="afk")
+async def afk(ctx, *, sebep: str = "Sebep belirtilmedi"):
+    guild_id = ctx.guild.id
+    user_id = ctx.author.id
+
+    if guild_id not in afk_users:
+        afk_users[guild_id] = {}
+
+    old_nick = ctx.author.display_name
+    afk_users[guild_id][user_id] = {
+        "reason": sebep,
+        "old_nick": ctx.author.nick  # Orijinal nick'i sakla
+    }
+
+    # Kullanıcı isminin başına [AFK] ekle
+    try:
+        new_nick = f"[AFK] {old_nick}"[:32] # Discord maks 32 karakter sınırına uygun yap
+        await ctx.author.edit(nick=new_nick)
+    except Exception:
+        pass # Sunucu sahibi veya botun yetkisi yetmediği bir rolse ismi değiştiremez
+
+    await ctx.send(f"💤 {ctx.author.mention} artık **AFK**.\n📝 **Sebep:** {sebep}")
+
+
 @bot.command(name="yardım", aliases=["yardim", "help"])
 async def yardim(ctx):
     mesaj = (
-        f"🛠️ **Moderasyon Komutları**\n"
+        f"🛠️ **Moderasyon Komutları (Sadece Admin)**\n"
         f"• `{PREFIX}sil <sayı>` — Belirtilen sayıda mesajı siler\n"
         f"• `{PREFIX}ban @üye [sebep]` — Üyeyi banlar\n"
         f"• `{PREFIX}unban <ID>` — Üyenin banını kaldırır\n"
@@ -156,11 +222,11 @@ async def yardim(ctx):
         f"• `{PREFIX}warn @üye [sebep]` — Uyarı verir (3 uyarıda otomatik 10dk mute)\n"
         f"• `{PREFIX}warnings @üye` — Üyenin uyarı sayısını gösterir\n"
         f"• `{PREFIX}lock` / `{PREFIX}unlock` — Kanalı kilitler/açar\n"
-        f"• `{PREFIX}slowmode <saniye>` — Kanala yavaş mod uygular\n\n"
-        f"👑 **Sunucu Yönetimi**\n"
+        f"• `{PREFIX}slowmode <saniye>` — Kanala yavaş mod uygular\n"
         f"• `{PREFIX}nick @üye <yeni isim>` — Takma isim değiştirir\n"
         f"• `{PREFIX}rolver @üye @rol` / `{PREFIX}rolal @üye @rol` — Rol verir/alır\n\n"
-        f"🎮 **Eğlence / Ekstra**\n"
+        f"👤 **Genel / Eğlence Komutları**\n"
+        f"• `{PREFIX}afk [sebep]` — AFK moduna geçer\n"
         f"• `{PREFIX}avatar [@üye]` — Profil fotoğrafını gösterir\n"
         f"• `{PREFIX}userinfo [@üye]` — Üye bilgisini gösterir\n"
         f"• `{PREFIX}serverinfo` — Sunucu istatistiklerini gösterir\n"
@@ -323,13 +389,12 @@ async def warn(ctx, uye: str = None, *, sebep: str = "Sebep belirtilmedi"):
 
     await ctx.send(f"⚠️ **{member.mention}** uyarıldı! (Toplam Uyarı: **{toplam_uyari}**)\n📝 Sebep: {sebep}")
 
-    # 3. Uyarıda Otomatik Mute (10 Dakika Timeout)
     if toplam_uyari >= 3:
         sure = discord.utils.utcnow() + discord.utils.timedelta(minutes=10)
         try:
             await member.timeout(sure, reason="3 Uyarı sınırına ulaşıldı.")
             await ctx.send(f"🚫 **{member.mention}** 3 uyarı aldığı için otomatik olarak **10 dakika** susturuldu!")
-            warnings_data[guild_id][user_id] = 0  # Sayacı sıfırla
+            warnings_data[guild_id][user_id] = 0
         except Exception as e:
             print(f"Otomatik mute hatası: {e}")
 
