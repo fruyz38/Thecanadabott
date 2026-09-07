@@ -1,5 +1,5 @@
 # ==========================================================
-# TheCanada Bot - Moderasyon, Eğlence, Seviye & Otomasyon Botu (c! prefix)
+# TheCanada Bot - Moderasyon, Güvenlik, Eğlence & Otomasyon Botu (c! prefix)
 # discord.py ile yazılmıştır, Render Web Service için hazırdır.
 # ==========================================================
 
@@ -8,7 +8,6 @@ import asyncio
 import threading
 import time
 import random
-import json
 from collections import defaultdict
 
 import discord
@@ -35,10 +34,6 @@ warnings_data = {}      # {guild_id: {user_id: count}} (Normal uyarılar)
 spam_warnings = {}      # {guild_id: {user_id: count}} (Spam özel uyarıları)
 afk_users = {}          # {guild_id: {user_id: {"reason": str, "old_nick": str}}}
 active_games = {}       # {channel_id: {"type": "sayitahmin", "number": int, "attempts": int}}
-
-# Seviye / XP Verileri
-levels_data = {}        # {guild_id: {user_id: {"xp": int, "level": int}}}
-xp_cooldowns = {}       # {guild_id: {user_id: timestamp}}
 
 # Spam Takip Hafızası (User_ID: [timestamp_listesi])
 user_messages = defaultdict(list)
@@ -78,7 +73,7 @@ async def yetki_kontrolu(ctx):
         "afk", "yardım", "yardim", "help", "ping", "avatar", "pp", 
         "userinfo", "kullanıcıbilgi", "kullanicibilgi", "serverinfo", "sunucubilgi",
         "8ball", "zar", "yazitura", "yazıtura", "duello", "düello", "sayitahmin", "sayıtahmin",
-        "saril", "sarıl", "tokat", "spotify", "seviye", "rank", "xp", "top", "leaderboard"
+        "saril", "sarıl", "tokat", "spotify"
     ]
     
     if ctx.command and ctx.command.name in herkese_acik:
@@ -100,7 +95,7 @@ async def on_command_error(ctx, error):
 
 
 # ----------------------------------------------------------
-# DİNLEYİCİLER (ON_MESSAGE & LÖÖP TASKS)
+# DİNLEYİCİLER (ON_MESSAGE & EVENTS)
 # ----------------------------------------------------------
 @bot.event
 async def on_message(message):
@@ -108,8 +103,6 @@ async def on_message(message):
         return
 
     guild_id_int = message.guild.id
-    guild_id = str(message.guild.id)
-    user_id_str = str(message.author.id)
     user_id = message.author.id
     channel_id = message.channel.id
 
@@ -145,7 +138,7 @@ async def on_message(message):
             except discord.Forbidden:
                 pass
 
-            # Sadece limiti ilk aştığı tetikleme anında işlem yap (Flood esnasında sürekli mesaj atıp mesajı kirletmemesi için)
+            # Sadece limiti ilk aştığı tetikleme anında işlem yap
             if len(user_messages[user_id]) == SPAM_LIMIT + 1:
                 if guild_id_int not in spam_warnings:
                     spam_warnings[guild_id_int] = {}
@@ -205,33 +198,6 @@ async def on_message(message):
                 del active_games[channel_id]
                 await message.reply(f"🎉 **TEBRİKLER!** Doğru sayıyı bildin: **{hedef}**\n📊 Toplam **{deneme}** tahminde bulundu.")
 
-    # 3. SEVİYE & XP SİSTEMİ (60 Saniye Cooldown)
-    now = time.time()
-    if guild_id not in xp_cooldowns:
-        xp_cooldowns[guild_id] = {}
-
-    last_xp = xp_cooldowns[guild_id].get(user_id_str, 0)
-    if now - last_xp >= 60:
-        xp_cooldowns[guild_id][user_id_str] = now
-
-        if guild_id not in levels_data:
-            levels_data[guild_id] = {}
-
-        if user_id_str not in levels_data[guild_id]:
-            levels_data[guild_id][user_id_str] = {"xp": 0, "level": 1}
-
-        user_data = levels_data[guild_id][user_id_str]
-        kazanilan_xp = random.randint(15, 25)
-        user_data["xp"] += kazanilan_xp
-
-        gereken_xp = user_data["level"] * 100
-        if user_data["xp"] >= gereken_xp:
-            user_data["level"] += 1
-            user_data["xp"] -= gereken_xp
-            await message.channel.send(
-                f"🎉 **Tebrikler {message.author.mention}!** **Seviye {user_data['level']}** seviyesine ulaştın! 🚀"
-            )
-
     await bot.process_commands(message)
 
 
@@ -270,9 +236,7 @@ def get_welcome_channel(guild):
 
 @bot.event
 async def on_member_join(member):
-    # ----------------------------------------------------
     # GÜVENLİK 3: SUNUCUYA BOT EKLENDİĞİNDE ADMINLERI UYARMA
-    # ----------------------------------------------------
     if member.bot:
         if LOG_KANAL_ID:
             log_channel = member.guild.get_channel(LOG_KANAL_ID)
@@ -377,9 +341,6 @@ async def get_mentioned_role(ctx):
 @bot.command(name="yardım", aliases=["yardim", "help"])
 async def yardim(ctx):
     mesaj = (
-        f"🏆 **Seviye & XP Komutları**\n"
-        f"• `{PREFIX}seviye [@üye]` — Seviye ve XP durumunu gösterir\n"
-        f"• `{PREFIX}top` — Sunucunun seviye sıralamasını gösterir (Top 10)\n\n"
         f"🎮 **Eğlence & Oyun Komutları**\n"
         f"• `{PREFIX}sayitahmin` — Sayı tahmin oyununu başlatır\n"
         f"• `{PREFIX}duello @üye` — Belirtilen üye ile 1v1 kapışır\n"
@@ -414,60 +375,6 @@ async def yardim(ctx):
 @bot.command(name="ping")
 async def ping(ctx):
     await ctx.reply(f"🏓 Pong! Gecikme: **{round(bot.latency * 1000)}ms**")
-
-
-# --- SEVİYE & XP KOMUTLARI ---
-
-@bot.command(name="seviye", aliases=["rank", "xp"])
-async def seviye(ctx, uye: str = None):
-    member = await get_mentioned_member(ctx) or ctx.author
-    guild_id = str(ctx.guild.id)
-    user_id = str(member.id)
-
-    user_data = levels_data.get(guild_id, {}).get(user_id, {"xp": 0, "level": 1})
-    lvl = user_data["level"]
-    xp = user_data["xp"]
-    gereken_xp = lvl * 100
-
-    embed = discord.Embed(title=f"📊 {member.display_name} - Seviye Kartı", color=discord.Color.gold())
-    embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="⭐ Seviye", value=f"**{lvl}**", inline=True)
-    embed.add_field(name="✨ XP", value=f"**{xp} / {gereken_xp}**", inline=True)
-    
-    oran = min(xp / gereken_xp, 1.0)
-    dolu = int(oran * 10)
-    bos = 10 - dolu
-    bar = "🟦" * dolu + "⬜" * bos
-    embed.add_field(name="📈 İlerleme", value=f"{bar} (`%{int(oran * 100)}`)", inline=False)
-
-    await ctx.send(embed=embed)
-
-
-@bot.command(name="top", aliases=["leaderboard", "sıralama", "siralama"])
-async def top(ctx):
-    guild_id = str(ctx.guild.id)
-    if guild_id not in levels_data or not levels_data[guild_id]:
-        await ctx.reply("📊 Henüz sunucuda kimse XP kazanmadı!")
-        return
-
-    sorted_users = sorted(
-        levels_data[guild_id].items(),
-        key=lambda x: (x[1]["level"], x[1]["xp"]),
-        reverse=True
-    )[:10]
-
-    embed = discord.Embed(title=f"🏆 {ctx.guild.name} - En Yüksek Seviyeler (Top 10)", color=discord.Color.gold())
-    
-    liste = ""
-    for idx, (u_id, data) in enumerate(sorted_users, start=1):
-        member = ctx.guild.get_member(int(u_id))
-        isim = member.display_name if member else f"Ayrılmış Üye ({u_id})"
-        
-        madalya = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"**#{idx}**"
-        liste += f"{madalya} **{isim}** — Seviye **{data['level']}** | {data['xp']} XP\n"
-
-    embed.description = liste
-    await ctx.send(embed=embed)
 
 
 # --- SPOTIFY KOMUTU ---
