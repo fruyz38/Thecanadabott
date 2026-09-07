@@ -31,14 +31,14 @@ YONETICI_ROL_IDS = [r.strip() for r in os.getenv("YONETICI_ROL_ID", "").split(",
 
 # Hafıza Verileri
 warnings_data = {}      # {guild_id: {user_id: count}} (Normal uyarılar)
-spam_warnings = {}      # {guild_id: {user_id: count}} (Spam özel uyarıları)
+spam_history = {}       # {guild_id: {user_id: count}} (Kaçıncı kez spam yaptığı)
 afk_users = {}          # {guild_id: {user_id: {"reason": str, "old_nick": str}}}
 active_games = {}       # {channel_id: {"type": "sayitahmin", "number": int, "attempts": int}}
 
-# Spam Takip Hafızası (User_ID: [timestamp_listesi])
-user_messages = defaultdict(list)
-SPAM_LIMIT = 10         # 8 saniyede 10 mesaj sınırı
-SPAM_ZAMAN = 8          # 8 saniye penceresi
+# Spam Takip Hafızası
+user_messages = defaultdict(list)    # User_ID: [(timestamp, message_obj)]
+SPAM_LIMIT = 5                      # 10 saniyede 5 mesaj sınırı
+SPAM_ZAMAN = 10                     # 10 saniye penceresi
 
 # Otomatik Duyuru Ayarları
 auto_message_config = {
@@ -126,42 +126,59 @@ async def on_message(message):
                 pass
 
         # ----------------------------------------------------
-        # GÜVENLİK 2: SPAM KORUMASI (8 Saniyede 10 Mesaj -> 3 Uyarı / Timeout)
+        # GÜVENLİK 2: SPAM KORUMASI (10 Saniyede 5 Mesaj)
         # ----------------------------------------------------
         now_time = time.time()
-        user_messages[user_id] = [t for t in user_messages[user_id] if now_time - t < SPAM_ZAMAN]
-        user_messages[user_id].append(now_time)
+        # Son 10 saniyedeki mesajları filtrele
+        user_messages[user_id] = [(t, msg) for t, msg in user_messages[user_id] if now_time - t < SPAM_ZAMAN]
+        user_messages[user_id].append((now_time, message))
 
-        if len(user_messages[user_id]) > SPAM_LIMIT:
+        if len(user_messages[user_id]) >= SPAM_LIMIT:
+            # Spam yapan kullanıcının son mesajlarını sil
+            messages_to_delete = [msg for t, msg in user_messages[user_id]]
+            user_messages[user_id].clear()  # Tekrar tekrar tetiklenmesin diye listeyi temizle
+
             try:
-                await message.delete()
+                if hasattr(message.channel, "delete_messages"):
+                    await message.channel.delete_messages(messages_to_delete)
+                else:
+                    for msg in messages_to_delete:
+                        await msg.delete()
             except discord.Forbidden:
                 pass
+            except Exception as e:
+                print(f"Spam mesajları silinirken hata: {e}")
 
-            # Sadece limiti ilk aştığı tetikleme anında işlem yap
-            if len(user_messages[user_id]) == SPAM_LIMIT + 1:
-                if guild_id_int not in spam_warnings:
-                    spam_warnings[guild_id_int] = {}
+            # Spam geçmişini takip et (1. ihlal -> 24 saat, 2+ ihlal -> 1 hafta)
+            if guild_id_int not in spam_history:
+                spam_history[guild_id_int] = {}
 
-                spam_warnings[guild_id_int][user_id] = spam_warnings[guild_id_int].get(user_id, 0) + 1
-                u_count = spam_warnings[guild_id_int][user_id]
+            spam_history[guild_id_int][user_id] = spam_history[guild_id_int].get(user_id, 0) + 1
+            ihlal_sayisi = spam_history[guild_id_int][user_id]
 
-                if u_count < 3:
-                    await message.channel.send(
-                        f"⚠️ {message.author.mention}, lütfen spam/flood yapma! **({u_count}/3)** uyarı aldın!",
-                        delete_after=6
-                    )
-                else:
-                    # 3/3 Uyarıya ulaştı -> 10 Dakika Timeout
-                    spam_warnings[guild_id_int][user_id] = 0  # Sayacı sıfırla
-                    timeout_duration = discord.utils.utcnow() + discord.utils.timedelta(minutes=10)
-                    try:
-                        await message.author.timeout(timeout_duration, reason="8 saniyede 10+ mesaj / 3 kez spam uyarısı alındı.")
-                        await message.channel.send(
-                            f"🚫 {message.author.mention}, **3/3** spam uyarısına ulaştığın için **10 dakika** boyunca susturuldun!"
-                        )
-                    except discord.Forbidden:
-                        await message.channel.send(f"⚠️ {message.author.mention} 3/3 spam sınırını aştı ancak yetkim yetmediği için susturamadım!")
+            if ihlal_sayisi == 1:
+                sure_dakika = 24 * 60   # 24 Saat (1 Gün)
+                sure_metni = "24 saat (1 gün)"
+            else:
+                sure_dakika = 7 * 24 * 60  # 1 Hafta (7 Gün)
+                sure_metni = "1 hafta (7 gün)"
+
+            timeout_duration = discord.utils.utcnow() + discord.utils.timedelta(minutes=sure_dakika)
+
+            try:
+                await message.author.timeout(
+                    timeout_duration, 
+                    reason=f"10 saniyede 5+ mesaj atarak spam yaptı. ({ihlal_sayisi}. ihlal - {sure_metni})"
+                )
+                
+                # Kanala duyuru mesajı at
+                await message.channel.send(
+                    f"🚫 {message.author.mention} bu kanalda spam yaptığı için **{sure_metni}** süresince zaman aşımına uğratılmıştır!"
+                )
+            except discord.Forbidden:
+                await message.channel.send(
+                    f"⚠️ {message.author.mention} bu kanalda spam yaptı fakat yetkim yetmediği için zaman aşımı uygulayamadım!"
+                )
             return
 
     # 1. AFK KONTROLÜ
@@ -752,7 +769,7 @@ async def rolal(ctx, uye: str = None, rol: str = None):
 @bot.command(name="avatar", aliases=["pp"])
 async def avatar(ctx, uye: str = None):
     member = await get_mentioned_member(ctx) or ctx.author
-    embed = discord.Embed(title=f"🖼️ {member.display_name} Profil Fotoğrafı", color=discord.Color.blue())
+    embed = discord.Embed(title=f"🖼️ {member.display_avatar.name} Profil Fotoğrafı", color=discord.Color.blue())
     embed.set_image(url=member.display_avatar.url)
     await ctx.send(embed=embed)
 
