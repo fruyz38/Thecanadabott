@@ -9,6 +9,7 @@ import threading
 import time
 import random
 from collections import defaultdict
+from datetime import timedelta
 
 import discord
 from discord.ext import commands, tasks
@@ -67,18 +68,18 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 async def yetki_kontrolu(ctx):
     if ctx.guild is None:
         return False
-    
+
     # Herkesin kullanabileceği komutlar
     herkese_acik = [
-        "afk", "yardım", "yardim", "help", "ping", "avatar", "pp", 
+        "afk", "yardım", "yardim", "help", "ping", "avatar", "pp",
         "userinfo", "kullanıcıbilgi", "kullanicibilgi", "serverinfo", "sunucubilgi",
         "8ball", "zar", "yazitura", "yazıtura", "duello", "düello", "sayitahmin", "sayıtahmin",
         "saril", "sarıl", "tokat", "spotify"
     ]
-    
+
     if ctx.command and ctx.command.name in herkese_acik:
         return True
-    
+
     if ctx.author.guild_permissions.administrator:
         return True
     raise commands.CheckFailure("no_admin")
@@ -163,14 +164,15 @@ async def on_message(message):
                 sure_dakika = 7 * 24 * 60  # 1 Hafta (7 Gün)
                 sure_metni = "1 hafta (7 gün)"
 
-            timeout_duration = discord.utils.utcnow() + discord.utils.timedelta(minutes=sure_dakika)
+            # BUG DÜZELTİLDİ: discord.utils.timedelta diye bir şey yok, datetime.timedelta olmalı
+            timeout_duration = discord.utils.utcnow() + timedelta(minutes=sure_dakika)
 
             try:
                 await message.author.timeout(
-                    timeout_duration, 
+                    timeout_duration,
                     reason=f"10 saniyede 5+ mesaj atarak spam yaptı. ({ihlal_sayisi}. ihlal - {sure_metni})"
                 )
-                
+
                 # Kanala duyuru mesajı at
                 await message.channel.send(
                     f"🚫 {message.author.mention} bu kanalda spam yaptığı için **{sure_metni}** süresince zaman aşımına uğratılmıştır!"
@@ -185,7 +187,7 @@ async def on_message(message):
     if message.guild.id in afk_users and message.author.id in afk_users[message.guild.id]:
         data = afk_users[message.guild.id].pop(message.author.id)
         old_nick = data.get("old_nick")
-        
+
         try:
             await message.author.edit(nick=old_nick)
         except Exception:
@@ -597,6 +599,8 @@ async def sil(ctx, miktar: str = None):
         await bilgi.delete()
     except Exception as e:
         print(e)
+        # BUG DÜZELTİLDİ: hata olduğunda kanala hiçbir şey söylenmiyordu, artık bildiriliyor
+        await ctx.send("❌ Mesajlar silinirken bir hata oluştu.")
 
 
 @bot.command(name="ban")
@@ -604,6 +608,11 @@ async def ban(ctx, *, arg: str = None):
     member = await get_mentioned_member(ctx)
     if member is None:
         await ctx.reply("⚠️ Lütfen üyeyi etiketleyin!")
+        return
+
+    # BUG DÜZELTİLDİ: kendini banlamayı engelle
+    if member.id == ctx.author.id:
+        await ctx.reply("❌ Kendini banlayamazsın!")
         return
 
     reason = "Sebep belirtilmedi"
@@ -615,6 +624,7 @@ async def ban(ctx, *, arg: str = None):
         await ctx.send(f"✅ **{member}** banlandı.\n📝 Sebep: {reason}")
     except Exception as e:
         print(e)
+        await ctx.send("❌ Üye banlanırken bir hata oluştu (rolüm yeterince yüksek olmayabilir).")
 
 
 @bot.command(name="kick")
@@ -622,6 +632,11 @@ async def kick(ctx, *, arg: str = None):
     member = await get_mentioned_member(ctx)
     if member is None:
         await ctx.reply("⚠️ Lütfen üyeyi etiketleyin!")
+        return
+
+    # BUG DÜZELTİLDİ: kendini atmayı engelle
+    if member.id == ctx.author.id:
+        await ctx.reply("❌ Kendini atamazsın!")
         return
 
     reason = "Sebep belirtilmedi"
@@ -633,6 +648,7 @@ async def kick(ctx, *, arg: str = None):
         await ctx.send(f"✅ **{member}** atıldı.\n📝 Sebep: {reason}")
     except Exception as e:
         print(e)
+        await ctx.send("❌ Üye atılırken bir hata oluştu (rolüm yeterince yüksek olmayabilir).")
 
 
 @bot.command(name="timeout", aliases=["sustur"])
@@ -642,22 +658,37 @@ async def timeout(ctx, uye: str = None, dakika: str = None, *, sebep: str = None
         await ctx.reply(f"⚠️ Kullanım: `{PREFIX}timeout @üye 10 sebep`")
         return
 
+    # BUG DÜZELTİLDİ: kendini susturmayı engelle
+    if member.id == ctx.author.id:
+        await ctx.reply("❌ Kendini susturamazsın!")
+        return
+
     reason = sebep or "Sebep belirtilmedi"
-    sure = discord.utils.utcnow() + discord.utils.timedelta(minutes=int(dakika))
+    # BUG DÜZELTİLDİ: discord.utils.timedelta diye bir şey yok, datetime.timedelta olmalı
+    sure = discord.utils.utcnow() + timedelta(minutes=int(dakika))
 
     try:
         await member.timeout(sure, reason=reason)
         await ctx.send(f"✅ **{member}** {dakika} dakika susturuldu.\n📝 Sebep: {reason}")
     except Exception as e:
         print(e)
+        await ctx.send("❌ Üye susturulurken bir hata oluştu (rolüm yeterince yüksek olmayabilir).")
 
 
 @bot.command(name="unmute", aliases=["untimeout"])
 async def unmute(ctx, uye: str = None):
     member = await get_mentioned_member(ctx)
-    if member:
+    # BUG DÜZELTİLDİ: üye etiketlenmezse hiçbir şey olmuyordu, artık uyarı veriyor
+    if member is None:
+        await ctx.reply("⚠️ Lütfen üyeyi etiketleyin!")
+        return
+
+    try:
         await member.timeout(None)
         await ctx.send(f"🔊 **{member}** üzerindeki susturma kaldırıldı.")
+    except Exception as e:
+        print(e)
+        await ctx.send("❌ Susturma kaldırılırken bir hata oluştu.")
 
 
 @bot.command(name="warn", aliases=["uyar"])
@@ -667,25 +698,33 @@ async def warn(ctx, uye: str = None, *, sebep: str = "Sebep belirtilmedi"):
         await ctx.reply("⚠️ Lütfen üyeyi etiketleyin!")
         return
 
+    # BUG DÜZELTİLDİ: kendine uyarı vermeyi engelle
+    if member.id == ctx.author.id:
+        await ctx.reply("❌ Kendine uyarı veremezsin!")
+        return
+
     guild_id = ctx.guild.id
     user_id = member.id
 
     if guild_id not in warnings_data:
         warnings_data[guild_id] = {}
-    
+
     warnings_data[guild_id][user_id] = warnings_data[guild_id].get(user_id, 0) + 1
     toplam_uyari = warnings_data[guild_id][user_id]
 
     await ctx.send(f"⚠️ **{member.mention}** uyarıldı! (Toplam: **{toplam_uyari}**)\n📝 Sebep: {sebep}")
 
     if toplam_uyari >= 3:
-        sure = discord.utils.utcnow() + discord.utils.timedelta(minutes=10)
+        # BUG DÜZELTİLDİ: discord.utils.timedelta diye bir şey yok, bu yüzden bu satır
+        # her zaman hata verip 3. uyarıda susturmanın hiç uygulanmamasına sebep oluyordu.
+        sure = discord.utils.utcnow() + timedelta(minutes=15)
         try:
             await member.timeout(sure, reason="3 Uyarı sınırına ulaşıldı.")
-            await ctx.send(f"🚫 **{member.mention}** 3 uyarı aldığı için **10 dakika** susturuldu!")
+            await ctx.send(f"🚫 **{member.mention}** 3 uyarı aldığı için **15 dakika** susturuldu!")
             warnings_data[guild_id][user_id] = 0
         except Exception as e:
             print(f"Otomatik mute hatası: {e}")
+            await ctx.send("❌ Otomatik susturma uygulanırken bir hata oluştu (rolüm yeterince yüksek olmayabilir).")
 
 
 @bot.command(name="unwarn", aliases=["uyarı-sil", "uyarisil"])
@@ -719,58 +758,101 @@ async def warnings(ctx, uye: str = None):
 
 @bot.command(name="lock", aliases=["kilitle"])
 async def lock(ctx):
-    overwrite = ctx.channel.overwrites_for(ctx.guild.default_role)
-    overwrite.send_messages = False
-    await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
-    await ctx.send("🔒 Kanal kilitlendi.")
+    try:
+        overwrite = ctx.channel.overwrites_for(ctx.guild.default_role)
+        overwrite.send_messages = False
+        await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
+        await ctx.send("🔒 Kanal kilitlendi.")
+    except Exception as e:
+        print(e)
+        await ctx.send("❌ Kanal kilitlenirken bir hata oluştu.")
 
 
 @bot.command(name="unlock", aliases=["kilitac"])
 async def unlock(ctx):
-    overwrite = ctx.channel.overwrites_for(ctx.guild.default_role)
-    overwrite.send_messages = None
-    await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
-    await ctx.send("🔓 Kanalın kilidi açıldı.")
+    try:
+        overwrite = ctx.channel.overwrites_for(ctx.guild.default_role)
+        overwrite.send_messages = None
+        await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrite)
+        await ctx.send("🔓 Kanalın kilidi açıldı.")
+    except Exception as e:
+        print(e)
+        await ctx.send("❌ Kanal kilidi açılırken bir hata oluştu.")
 
 
 @bot.command(name="slowmode", aliases=["yavasmod"])
 async def slowmode(ctx, saniye: str = None):
-    if saniye and saniye.isdigit():
+    # BUG DÜZELTİLDİ: geçersiz/eksik değerde hiçbir şey olmuyordu, artık uyarı veriyor
+    if saniye is None or not saniye.isdigit():
+        await ctx.reply(f"⚠️ Kullanım: `{PREFIX}slowmode <saniye>` (kapatmak için `{PREFIX}slowmode 0`)")
+        return
+
+    try:
         await ctx.channel.edit(slowmode_delay=int(saniye))
         await ctx.send(f"⏱️ Yavaş mod **{saniye} saniye** olarak ayarlandı.")
+    except Exception as e:
+        print(e)
+        await ctx.send("❌ Yavaş mod ayarlanırken bir hata oluştu.")
 
 
 @bot.command(name="nick", aliases=["isim"])
 async def nick(ctx, uye: str = None, *, yeni_isim: str = None):
     member = await get_mentioned_member(ctx)
-    if member and yeni_isim:
+    # BUG DÜZELTİLDİ: eksik bilgide hiçbir şey olmuyordu, artık uyarı veriyor
+    if member is None or not yeni_isim:
+        await ctx.reply(f"⚠️ Kullanım: `{PREFIX}nick @üye <yeni isim>`")
+        return
+
+    try:
         await member.edit(nick=yeni_isim)
         await ctx.send(f"✅ **{member.name}** ismi **{yeni_isim}** yapıldı.")
+    except Exception as e:
+        print(e)
+        await ctx.send("❌ İsim değiştirilirken bir hata oluştu (rolüm yeterince yüksek olmayabilir).")
 
 
 @bot.command(name="rolver")
 async def rolver(ctx, uye: str = None, rol: str = None):
     member = await get_mentioned_member(ctx)
     role = await get_mentioned_role(ctx)
-    if member and role:
+    # BUG DÜZELTİLDİ: eksik bilgide hiçbir şey olmuyordu, artık uyarı veriyor
+    if member is None or role is None:
+        await ctx.reply(f"⚠️ Kullanım: `{PREFIX}rolver @üye @rol`")
+        return
+
+    try:
         await member.add_roles(role)
         await ctx.send(f"✅ **{member.display_name}** kullanıcısına **{role.name}** rolü verildi.")
+    except Exception as e:
+        print(e)
+        await ctx.send("❌ Rol verilirken bir hata oluştu (rolüm yeterince yüksek olmayabilir).")
 
 
 @bot.command(name="rolal")
 async def rolal(ctx, uye: str = None, rol: str = None):
     member = await get_mentioned_member(ctx)
     role = await get_mentioned_role(ctx)
-    if member and role:
+    # BUG DÜZELTİLDİ: eksik bilgide hiçbir şey olmuyordu, artık uyarı veriyor
+    if member is None or role is None:
+        await ctx.reply(f"⚠️ Kullanım: `{PREFIX}rolal @üye @rol`")
+        return
+
+    try:
         await member.remove_roles(role)
         await ctx.send(f"✅ **{member.display_name}** kullanıcısından **{role.name}** rolü alındı.")
+    except Exception as e:
+        print(e)
+        await ctx.send("❌ Rol alınırken bir hata oluştu (rolüm yeterince yüksek olmayabilir).")
 
 
 @bot.command(name="avatar", aliases=["pp"])
 async def avatar(ctx, uye: str = None):
     member = await get_mentioned_member(ctx) or ctx.author
-    embed = discord.Embed(title=f"🖼️ {member.display_avatar.name} Profil Fotoğrafı", color=discord.Color.blue())
-    embed.set_image(url=member.display_avatar.url)
+    # BUG DÜZELTİLDİ: Asset nesnesinin '.name' diye bir özelliği yok, bu yüzden komut
+    # hep hata verip çöküyordu. Ayrıca büyük/net görünmesi için boyut 1024 olarak ayarlandı.
+    buyuk_avatar = member.display_avatar.with_size(1024)
+    embed = discord.Embed(title=f"🖼️ {member.display_name} - Profil Fotoğrafı", color=discord.Color.blue())
+    embed.set_image(url=buyuk_avatar.url)
     await ctx.send(embed=embed)
 
 
