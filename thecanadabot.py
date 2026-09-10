@@ -257,8 +257,11 @@ def get_welcome_channel(guild):
 async def on_member_join(member):
     # GÜVENLİK 3: SUNUCUYA BOT EKLENDİĞİNDE ADMINLERI UYARMA
     if member.bot:
+        print(f"🤖 Yeni bot algılandı: {member} | YONETICI_ROL_IDS = {YONETICI_ROL_IDS} | LOG_KANAL_ID = {LOG_KANAL_ID}")
         if LOG_KANAL_ID:
             log_channel = member.guild.get_channel(LOG_KANAL_ID)
+            if log_channel is None:
+                print(f"⚠️ LOG_KANAL_ID ({LOG_KANAL_ID}) ile eşleşen bir kanal bulunamadı!")
             if log_channel:
                 embed = discord.Embed(
                     title="🚨 GÜVENLİK UYARISI: Yeni Bot Katıldı!",
@@ -276,9 +279,18 @@ async def on_member_join(member):
                 if YONETICI_ROL_IDS:
                     mention_text = " ".join([f"<@&{r_id}>" for r_id in YONETICI_ROL_IDS])
                 else:
+                    print("⚠️ YONETICI_ROL_ID ortam değişkeni boş/hatalı, @everyone kullanılacak.")
                     mention_text = "@everyone"
 
-                await log_channel.send(content=mention_text, embed=embed)
+                # BUG DÜZELTİLDİ: allowed_mentions belirtilmezse Discord bazı durumlarda
+                # rol/@everyone etiketlemesini bastırabiliyor, bu yüzden açıkça izin veriliyor.
+                await log_channel.send(
+                    content=mention_text,
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions(roles=True, everyone=True),
+                )
+        else:
+            print("⚠️ LOG_KANAL_ID ortam değişkeni ayarlanmamış, bot katılım uyarısı gönderilemiyor.")
         return
 
     # Normal Kullanıcı Katılımı
@@ -329,6 +341,7 @@ async def voice_watchdog():
 @bot.event
 async def on_ready():
     print(f"✅ {bot.user} olarak giriş yapıldı!")
+    print(f"ℹ️ LOG_KANAL_ID = {LOG_KANAL_ID} | YONETICI_ROL_IDS = {YONETICI_ROL_IDS}")
     await bot.change_presence(
         activity=discord.Activity(type=discord.ActivityType.watching, name=f"{PREFIX}yardım")
     )
@@ -351,6 +364,15 @@ async def get_mentioned_role(ctx):
     if ctx.message.role_mentions:
         return ctx.message.role_mentions[0]
     return None
+
+
+def hiyerarsi_engelli(ctx, member):
+    """Botun rolü hedeften düşükse veya hedef sunucu sahibiyse True döner (işlem yapılamaz)."""
+    if member == ctx.guild.owner:
+        return True
+    if member.top_role >= ctx.guild.me.top_role:
+        return True
+    return False
 
 
 # ----------------------------------------------------------
@@ -620,6 +642,11 @@ async def ban(ctx, *, arg: str = None):
         await ctx.reply("❌ Botları banlayamazsın!")
         return
 
+    # BUG DÜZELTİLDİ: rol hiyerarşisi önceden kontrol edilmiyordu
+    if hiyerarsi_engelli(ctx, member):
+        await ctx.reply("❌ Bu üyeyi banlayamıyorum (rolü benimkinden yüksek veya sunucu sahibi).")
+        return
+
     reason = "Sebep belirtilmedi"
     if arg and len(arg.split(maxsplit=1)) > 1:
         reason = arg.split(maxsplit=1)[1]
@@ -647,6 +674,11 @@ async def kick(ctx, *, arg: str = None):
     # Botları (kendisi dahil) atmayı engelle
     if member.bot:
         await ctx.reply("❌ Botları atamazsın!")
+        return
+
+    # BUG DÜZELTİLDİ: rol hiyerarşisi önceden kontrol edilmiyordu
+    if hiyerarsi_engelli(ctx, member):
+        await ctx.reply("❌ Bu üyeyi atamıyorum (rolü benimkinden yüksek veya sunucu sahibi).")
         return
 
     reason = "Sebep belirtilmedi"
@@ -678,6 +710,11 @@ async def timeout(ctx, uye: str = None, dakika: str = None, *, sebep: str = None
         await ctx.reply("❌ Botları susturamazsın!")
         return
 
+    # BUG DÜZELTİLDİ: rol hiyerarşisi önceden kontrol edilmiyordu
+    if hiyerarsi_engelli(ctx, member):
+        await ctx.reply("❌ Bu üyeyi susturamıyorum (rolü benimkinden yüksek veya sunucu sahibi).")
+        return
+
     reason = sebep or "Sebep belirtilmedi"
     # BUG DÜZELTİLDİ: discord.utils.timedelta diye bir şey yok, datetime.timedelta olmalı
     sure = discord.utils.utcnow() + timedelta(minutes=int(dakika))
@@ -696,6 +733,11 @@ async def unmute(ctx, uye: str = None):
     # BUG DÜZELTİLDİ: üye etiketlenmezse hiçbir şey olmuyordu, artık uyarı veriyor
     if member is None:
         await ctx.reply("⚠️ Lütfen üyeyi etiketleyin!")
+        return
+
+    # Botlara işlem yapmayı engelle
+    if member.bot:
+        await ctx.reply("❌ Botların susturmasını kaldıramazsın!")
         return
 
     try:
@@ -735,16 +777,18 @@ async def warn(ctx, uye: str = None, *, sebep: str = "Sebep belirtilmedi"):
     await ctx.send(f"⚠️ **{member.mention}** uyarıldı! (Toplam: **{toplam_uyari}**)\n📝 Sebep: {sebep}")
 
     if toplam_uyari >= 3:
-        # BUG DÜZELTİLDİ: discord.utils.timedelta diye bir şey yok, bu yüzden bu satır
-        # her zaman hata verip 3. uyarıda susturmanın hiç uygulanmamasına sebep oluyordu.
-        sure = discord.utils.utcnow() + timedelta(minutes=15)
-        try:
-            await member.timeout(sure, reason="3 Uyarı sınırına ulaşıldı.")
-            await ctx.send(f"🚫 **{member.mention}** 3 uyarı aldığı için **15 dakika** susturuldu!")
-            warnings_data[guild_id][user_id] = 0
-        except Exception as e:
-            print(f"Otomatik mute hatası: {e}")
-            await ctx.send("❌ Otomatik susturma uygulanırken bir hata oluştu (rolüm yeterince yüksek olmayabilir).")
+        # BUG DÜZELTİLDİ: hiyerarşi kontrolü eklendi, gereksiz hata denemesi engellendi
+        if hiyerarsi_engelli(ctx, member):
+            await ctx.send(f"⚠️ **{member}** 3 uyarıya ulaştı ama rolü benimkinden yüksek olduğu için susturamıyorum.")
+        else:
+            sure = discord.utils.utcnow() + timedelta(minutes=15)
+            try:
+                await member.timeout(sure, reason="3 Uyarı sınırına ulaşıldı.")
+                await ctx.send(f"🚫 **{member.mention}** 3 uyarı aldığı için **15 dakika** susturuldu!")
+                warnings_data[guild_id][user_id] = 0
+            except Exception as e:
+                print(f"Otomatik mute hatası: {e}")
+                await ctx.send("❌ Otomatik susturma uygulanırken bir hata oluştu (rolüm yeterince yüksek olmayabilir).")
 
 
 @bot.command(name="unwarn", aliases=["uyarı-sil", "uyarisil"])
@@ -823,6 +867,16 @@ async def nick(ctx, uye: str = None, *, yeni_isim: str = None):
         await ctx.reply(f"⚠️ Kullanım: `{PREFIX}nick @üye <yeni isim>`")
         return
 
+    # Botların ismini değiştirmeyi engelle
+    if member.bot:
+        await ctx.reply("❌ Botların ismini değiştiremezsin!")
+        return
+
+    # BUG DÜZELTİLDİ: rol hiyerarşisi önceden kontrol edilmiyordu
+    if hiyerarsi_engelli(ctx, member):
+        await ctx.reply("❌ Bu üyenin ismini değiştiremiyorum (rolü benimkinden yüksek veya sunucu sahibi).")
+        return
+
     try:
         await member.edit(nick=yeni_isim)
         await ctx.send(f"✅ **{member.name}** ismi **{yeni_isim}** yapıldı.")
@@ -840,6 +894,11 @@ async def rolver(ctx, uye: str = None, rol: str = None):
         await ctx.reply(f"⚠️ Kullanım: `{PREFIX}rolver @üye @rol`")
         return
 
+    # BUG DÜZELTİLDİ: rol hiyerarşisi önceden kontrol edilmiyordu (rol bottan yüksekse verilemez)
+    if role >= ctx.guild.me.top_role:
+        await ctx.reply("❌ Bu rolü veremiyorum (rol benim en yüksek rolümden yüksek veya eşit).")
+        return
+
     try:
         await member.add_roles(role)
         await ctx.send(f"✅ **{member.display_name}** kullanıcısına **{role.name}** rolü verildi.")
@@ -855,6 +914,11 @@ async def rolal(ctx, uye: str = None, rol: str = None):
     # BUG DÜZELTİLDİ: eksik bilgide hiçbir şey olmuyordu, artık uyarı veriyor
     if member is None or role is None:
         await ctx.reply(f"⚠️ Kullanım: `{PREFIX}rolal @üye @rol`")
+        return
+
+    # BUG DÜZELTİLDİ: rol hiyerarşisi önceden kontrol edilmiyordu (rol bottan yüksekse alınamaz)
+    if role >= ctx.guild.me.top_role:
+        await ctx.reply("❌ Bu rolü alamıyorum (rol benim en yüksek rolümden yüksek veya eşit).")
         return
 
     try:
