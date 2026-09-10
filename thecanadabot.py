@@ -38,7 +38,7 @@ active_games = {}       # {channel_id: {"type": "sayitahmin", "number": int, "at
 
 # Spam Takip Hafızası
 user_messages = defaultdict(list)    # User_ID: [(timestamp, message_obj)]
-SPAM_LIMIT = 7                      # 10 saniyede 5 mesaj sınırı
+SPAM_LIMIT = 5                      # 10 saniyede 5 mesaj sınırı
 SPAM_ZAMAN = 10                     # 10 saniye penceresi
 
 # Otomatik Duyuru Ayarları
@@ -615,6 +615,11 @@ async def ban(ctx, *, arg: str = None):
         await ctx.reply("❌ Kendini banlayamazsın!")
         return
 
+    # Botları (kendisi dahil) banlamayı engelle
+    if member.bot:
+        await ctx.reply("❌ Botları banlayamazsın!")
+        return
+
     reason = "Sebep belirtilmedi"
     if arg and len(arg.split(maxsplit=1)) > 1:
         reason = arg.split(maxsplit=1)[1]
@@ -639,6 +644,11 @@ async def kick(ctx, *, arg: str = None):
         await ctx.reply("❌ Kendini atamazsın!")
         return
 
+    # Botları (kendisi dahil) atmayı engelle
+    if member.bot:
+        await ctx.reply("❌ Botları atamazsın!")
+        return
+
     reason = "Sebep belirtilmedi"
     if arg and len(arg.split(maxsplit=1)) > 1:
         reason = arg.split(maxsplit=1)[1]
@@ -661,6 +671,11 @@ async def timeout(ctx, uye: str = None, dakika: str = None, *, sebep: str = None
     # BUG DÜZELTİLDİ: kendini susturmayı engelle
     if member.id == ctx.author.id:
         await ctx.reply("❌ Kendini susturamazsın!")
+        return
+
+    # Botları (kendisi dahil) susturmayı engelle
+    if member.bot:
+        await ctx.reply("❌ Botları susturamazsın!")
         return
 
     reason = sebep or "Sebep belirtilmedi"
@@ -701,6 +716,11 @@ async def warn(ctx, uye: str = None, *, sebep: str = "Sebep belirtilmedi"):
     # BUG DÜZELTİLDİ: kendine uyarı vermeyi engelle
     if member.id == ctx.author.id:
         await ctx.reply("❌ Kendine uyarı veremezsin!")
+        return
+
+    # Botlara (kendisi dahil) uyarı vermeyi engelle
+    if member.bot:
+        await ctx.reply("❌ Botlara uyarı veremezsin!")
         return
 
     guild_id = ctx.guild.id
