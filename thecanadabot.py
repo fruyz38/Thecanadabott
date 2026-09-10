@@ -38,7 +38,7 @@ active_games = {}       # {channel_id: {"type": "sayitahmin", "number": int, "at
 
 # Spam Takip Hafızası
 user_messages = defaultdict(list)    # User_ID: [(timestamp, message_obj)]
-SPAM_LIMIT = 5                      # 10 saniyede 5 mesaj sınırı
+SPAM_LIMIT = 7                      # 10 saniyede 5 mesaj sınırı
 SPAM_ZAMAN = 10                     # 10 saniye penceresi
 
 # Otomatik Duyuru Ayarları
